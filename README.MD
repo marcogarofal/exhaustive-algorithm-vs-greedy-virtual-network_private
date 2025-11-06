@@ -1,3 +1,4 @@
+tree_optimizer.py is the exaustive algorithm
 # Tree Optimization Algorithm
 
 A refactored and modular implementation of a tree optimization algorithm for graphs with different node types (weak, mandatory power, and discretionary power nodes).
