@@ -1,0 +1,37 @@
+{
+  "graph_parameters": {
+    "num_nodes": 6,
+    "weak_ratio": 0.4,
+    "mandatory_ratio": 0.2,
+    "seed": 42,
+    "comment": "Can also use: num_weak, num_mandatory, num_discretionary instead of num_nodes+ratios"
+  },
+  "capacities": {
+    "default": 10,
+    "custom": {
+      "2": 30,
+      "3": 2,
+      "4": 1
+    },
+    "comment": "Options: {default: X}, {default: X, custom: {...}}, {random: {min: X, max: Y, seed: Z}}, or explicit {1: X, 2: Y, ...}"
+  },
+  "debug": {
+    "plot_initial_graphs": false,
+    "plot_intermediate": false,
+    "plot_final": true,
+    "save_plots": true,
+    "verbose": false,
+    "verbose_level2": false,
+    "verbose_level3": false
+  },
+  "algorithm": {
+    "weight_range": [
+      1,
+      10
+    ]
+  },
+  "output": {
+    "plots_dir": "plots",
+    "results_dir": "results"
+  }
+}
