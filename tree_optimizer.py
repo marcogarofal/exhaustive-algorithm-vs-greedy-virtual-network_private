@@ -180,33 +180,32 @@ def save_graph(G, path, count_picture, name=None, edge_cost=None, degree_cost=No
     colors = [node_colors[data['node_type']] for _, data in G.nodes(data=True)]
     edge_labels = {(i, j): G[i][j]['weight'] for i, j in G.edges()}
 
-    # Create figure with more space for text
+    # Create figure
     fig, ax = plt.subplots(figsize=(10, 8))
 
     nx.draw(G, pos, with_labels=True, node_color=colors, font_weight='bold', ax=ax)
     nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax)
 
-    # Add score annotation if provided
+    # Add score annotation only if provided (for best_tree only)
     if edge_cost is not None and degree_cost is not None:
         total_cost = edge_cost + degree_cost
         score_text = f'Edge Cost: {edge_cost:.4f}\nDegree Cost: {degree_cost:.4f}\nTotal: {total_cost:.4f}'
         ax.text(0.02, 0.98, score_text, transform=ax.transAxes,
                fontsize=10, verticalalignment='top',
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-
-    # Build filename with score if provided
-    if name is None:
-        filename = f"{count_picture}_graph.png"
-    elif edge_cost is not None and degree_cost is not None:
-        total_cost = edge_cost + degree_cost
+        # Include score in filename only for best_tree
         filename = f"{count_picture}_{name}_e{edge_cost:.4f}_d{degree_cost:.4f}_t{total_cost:.4f}.png"
     else:
-        filename = f"{count_picture}_{name}_graph.png"
+        # No score in filename for intermediate trees
+        if name is None:
+            filename = f"{count_picture}_graph.png"
+        else:
+            filename = f"{count_picture}_{name}.png"
 
     path_to_save = os.path.join(path, filename)
     plt.savefig(path_to_save)
     plt.close()
-    return count_picture + 1
+    return count_picture + 1, filename
 
 
 def build_tree_from_list_edges(G, desired_edges, no_plot=None):
@@ -233,8 +232,100 @@ def get_weight(item):
     return item[1]['weight']
 
 
+def save_scores_to_json(scores, output_path):
+    """Save scores dictionary to JSON file"""
+    import json
+    with open(output_path, 'w') as f:
+        json.dump(scores, f, indent=2)
+    print(f"Scores saved to {output_path}")
+
+
+def calculate_absolute_scores(trees_data, capacities, power_nodes_mandatory, power_nodes_discretionary):
+    """
+    Calculate absolute scores for all trees with global normalization.
+
+    Args:
+        trees_data: list of (tree, filename) tuples
+        capacities: node capacities dict
+        power_nodes_mandatory: list of mandatory power nodes
+        power_nodes_discretionary: list of discretionary power nodes
+
+    Returns:
+        dict with scores for each tree
+    """
+    if not trees_data:
+        return {}
+
+    # Find global max edge weight and max edges across ALL trees
+    global_max_weight = 0
+    global_max_edges = 0
+
+    for tree, _ in trees_data:
+        if tree and tree.number_of_edges() > 0:
+            edges_with_weights = [(edge, tree.get_edge_data(edge[0], edge[1])) for edge in tree.edges()]
+            tree_max_weight = max(edges_with_weights, key=get_weight)[1]["weight"]
+            tree_num_edges = len(edges_with_weights)
+
+            global_max_weight = max(global_max_weight, tree_max_weight)
+            global_max_edges = max(global_max_edges, tree_num_edges)
+
+    if global_max_weight == 0:
+        global_max_weight = 1  # Avoid division by zero
+    if global_max_edges == 0:
+        global_max_edges = 1  # Avoid division by zero
+
+    # Calculate scores for each tree using global normalization
+    scores = {
+        "global_max_weight": global_max_weight,
+        "global_max_edges": global_max_edges,
+        "trees": {}
+    }
+
+    set_power_nodes = set(list(power_nodes_mandatory) + list(power_nodes_discretionary))
+
+    for tree, filename in trees_data:
+        if tree and tree.number_of_edges() > 0:
+            # Calculate edge cost with GLOBAL normalization
+            edges_with_weights = [(edge, tree.get_edge_data(edge[0], edge[1])) for edge in tree.edges()]
+            total_weight = sum(data['weight'] for edge, data in edges_with_weights)
+
+            # Use global max_weight and global max_edges for normalization
+            edge_cost = total_weight / (global_max_weight * global_max_edges)
+
+            # Calculate degree cost
+            degree_cost = 0
+            for node in tree.nodes():
+                if node in set_power_nodes and node in capacities:
+                    degree_cost += tree.degree(node) / capacities[node]
+            degree_cost = degree_cost / len(tree.nodes())
+
+            total_cost = edge_cost + degree_cost
+
+            scores["trees"][filename] = {
+                "edge_cost": round(edge_cost, 4),
+                "degree_cost": round(degree_cost, 4),
+                "total": round(total_cost, 4),
+                "num_nodes": tree.number_of_nodes(),
+                "num_edges": tree.number_of_edges(),
+                "nodes": list(tree.nodes()),
+                "edges": [list(edge) for edge in tree.edges()]
+            }
+        else:
+            scores["trees"][filename] = {
+                "edge_cost": 0,
+                "degree_cost": 0,
+                "total": 0,
+                "num_nodes": 0,
+                "num_edges": 0,
+                "nodes": [],
+                "edges": []
+            }
+
+    return scores
+
+
 def compare_2_trees(tree1, tree2, power_nodes_mandatory, power_nodes_discretionary, capacities, debug_config):
-    """Compare two trees and return the best one"""
+    """Compare two trees and return the best one with its costs"""
     if tree1 is None:
         tree1 = tree2
 
@@ -308,11 +399,13 @@ def compare_2_trees(tree1, tree2, power_nodes_mandatory, power_nodes_discretiona
     if edgecost1 + cost_degree1 <= edgecost2 + cost_degree2:
         if debug_config.verbose:
             print("\n\n\nbest_tree")
-        return tree1, edgecost1, cost_degree1
+        # Return tree1 with its costs (tree1 is better or equal)
+        return tree1, edgecost1, cost_degree1, True
     else:
         if debug_config.verbose:
             print("\n\n\nnew_tree")
-        return tree2, edgecost2, cost_degree2
+        # Return tree2 with its costs (tree2 is better)
+        return tree2, edgecost2, cost_degree2, False
 
 
 def join_2_trees(graph1, graph2, weak_nodes, power_nodes_mandatory, power_nodes_discretionary, added_edges, seed=None):
@@ -400,8 +493,9 @@ def generate_graphs(graph, power_nodes_discretionary, weak_nodes, power_nodes_ma
 
 
 def process_graph(graph, weak_nodes, power_nodes_mandatory, power_nodes_discretionary,
-                 best_tree, capacities, check_only_discretionary, check_no_mandatory,
-                 debug_config, plot_path, count_picture):
+                 best_tree, best_edge_cost, best_degree_cost, capacities,
+                 check_only_discretionary, check_no_mandatory,
+                 debug_config, plot_path, count_picture, trees_registry):
     """Process a graph to find optimal tree"""
     if debug_config.plot_intermediate:
         draw_graph(graph)
@@ -426,32 +520,23 @@ def process_graph(graph, weak_nodes, power_nodes_mandatory, power_nodes_discreti
         else:
             tree = build_tree_from_list_edges(graph, x, no_plot=True)
 
-        # Compare and get scores
-        best_tree, edgecost_best, degree_best = compare_2_trees(best_tree, tree, power_nodes_mandatory,
-                                                                power_nodes_discretionary, capacities, debug_config)
+        # Compare and get scores with is_best flag
+        best_tree, best_edge_cost, best_degree_cost, is_best = compare_2_trees(
+            best_tree, tree, power_nodes_mandatory,
+            power_nodes_discretionary, capacities, debug_config)
 
-        # Save with scores if enabled
+        # Save intermediate tree WITHOUT score
         if debug_config.save_plots:
-            # Calculate score for current tree
-            edges_with_weights = [(edge, tree.get_edge_data(edge[0], edge[1])) for edge in tree.edges()]
-            if edges_with_weights:
-                max_edge_cost = max(edges_with_weights, key=get_weight)[1]["weight"]
-                edgecost = sum(data['weight'] for edge, data in edges_with_weights) / (max_edge_cost * len(edges_with_weights))
-            else:
-                edgecost = 0
-
-            set_power_nodes = set(list(power_nodes_mandatory) + list(power_nodes_discretionary))
-            cost_degree = sum(tree.degree(x) / capacities[x] for x in tree.nodes() if x in set_power_nodes)
-            cost_degree = cost_degree / len(tree.nodes()) if len(tree.nodes()) > 0 else 0
-
-            count_picture = save_graph(tree, plot_path, count_picture, "intermediate", edgecost, cost_degree)
+            count_picture, filename = save_graph(tree, plot_path, count_picture, "intermediate")
+            # Register tree for later score calculation
+            trees_registry.append((copy.deepcopy(tree), filename))
 
         if debug_config.verbose:
             input("\n\nENTER to continue...")
         if debug_config.plot_intermediate:
             draw_graph(best_tree)
 
-    return best_tree, count_picture
+    return best_tree, best_edge_cost, best_degree_cost, count_picture
 
 
 def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir='plots'):
@@ -499,6 +584,9 @@ def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir=
     count_picture = 0
     added_edges = set()
 
+    # Registry to keep track of all evaluated trees for final score calculation
+    trees_registry = []
+
     # Check special cases
     num_nodes = len(weak_nodes) + len(power_nodes_mandatory) + len(power_nodes_discretionary)
     check_only_discretionary = len(power_nodes_discretionary) == num_nodes
@@ -512,7 +600,8 @@ def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir=
         if debug_config.plot_initial_graphs:
             draw_graph(graph)
         if debug_config.save_plots:
-            count_picture = save_graph(graph, plot_path, count_picture)
+            count_picture, filename = save_graph(graph, plot_path, count_picture)
+            # Don't register initial graph, only trees
 
         combinations_graph = CombinationGraph(graph, weak_nodes, debug_config)
         combinations_graph.filter_combinations_discretionary(weak_nodes, power_nodes_mandatory, None,
@@ -521,9 +610,21 @@ def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir=
 
         if len(combinations_graph.all_combinations) > 0:
             best_tree = build_tree_from_list_edges(graph, combinations_graph.all_combinations[0], no_plot=True)
+            # Initialize with first tree's costs
+            edges_with_weights = [(edge, best_tree.get_edge_data(edge[0], edge[1])) for edge in best_tree.edges()]
+            if edges_with_weights:
+                max_edge_cost = max(edges_with_weights, key=get_weight)[1]["weight"]
+                best_edge_cost = sum(data['weight'] for edge, data in edges_with_weights) / (max_edge_cost * len(edges_with_weights))
+            else:
+                best_edge_cost = 0
+            set_power_nodes = set(list(power_nodes_mandatory) + list(power_nodes_discretionary))
+            best_degree_cost = sum(best_tree.degree(x) / capacities[x] for x in best_tree.nodes() if x in set_power_nodes)
+            best_degree_cost = best_degree_cost / len(best_tree.nodes()) if len(best_tree.nodes()) > 0 else 0
         else:
             print("empty list")
             best_tree = None
+            best_edge_cost = 0
+            best_degree_cost = 0
 
         for x in combinations_graph.all_combinations:
             if debug_config.verbose:
@@ -534,25 +635,16 @@ def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir=
             else:
                 tree = build_tree_from_list_edges(graph, x, no_plot=True)
 
-            # Compare and get scores
-            best_tree, edgecost_best, degree_best = compare_2_trees(best_tree, tree, power_nodes_mandatory,
-                                                                    power_nodes_discretionary, capacities, debug_config)
+            # Compare and get scores with is_best flag
+            best_tree, best_edge_cost, best_degree_cost, is_best = compare_2_trees(
+                best_tree, tree, power_nodes_mandatory,
+                power_nodes_discretionary, capacities, debug_config)
 
-            # Save with scores if enabled
+            # Save intermediate tree WITHOUT score
             if debug_config.save_plots:
-                # Calculate score for current tree
-                edges_with_weights = [(edge, tree.get_edge_data(edge[0], edge[1])) for edge in tree.edges()]
-                if edges_with_weights:
-                    max_edge_cost = max(edges_with_weights, key=get_weight)[1]["weight"]
-                    edgecost = sum(data['weight'] for edge, data in edges_with_weights) / (max_edge_cost * len(edges_with_weights))
-                else:
-                    edgecost = 0
-
-                set_power_nodes = set(list(power_nodes_mandatory) + list(power_nodes_discretionary))
-                cost_degree = sum(tree.degree(x) / capacities[x] for x in tree.nodes() if x in set_power_nodes)
-                cost_degree = cost_degree / len(tree.nodes()) if len(tree.nodes()) > 0 else 0
-
-                count_picture = save_graph(tree, plot_path, count_picture, "first_phase", edgecost, cost_degree)
+                count_picture, filename = save_graph(tree, plot_path, count_picture, "first_phase")
+                # Register tree for later score calculation
+                trees_registry.append((copy.deepcopy(tree), filename))
 
             if debug_config.verbose:
                 input("Enter...")
@@ -561,16 +653,19 @@ def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir=
     else:
         graph = nx.Graph()
         best_tree = None
+        best_edge_cost = 0
+        best_degree_cost = 0
 
     # Process discretionary nodes
     graphs = generate_graphs(graph, power_nodes_discretionary, weak_nodes, power_nodes_mandatory,
                             added_edges, debug_config, seed=seed)
 
     for graph_iter in graphs:
-        best_tree, count_picture = process_graph(graph_iter, weak_nodes, power_nodes_mandatory,
-                                                 power_nodes_discretionary, best_tree, capacities,
-                                                 check_only_discretionary, check_no_mandatory,
-                                                 debug_config, plot_path, count_picture)
+        best_tree, best_edge_cost, best_degree_cost, count_picture = process_graph(
+            graph_iter, weak_nodes, power_nodes_mandatory,
+            power_nodes_discretionary, best_tree, best_edge_cost, best_degree_cost,
+            capacities, check_only_discretionary, check_no_mandatory,
+            debug_config, plot_path, count_picture, trees_registry)
 
     end_time = time.time()
     elapsed_time = end_time - start_time
@@ -579,22 +674,24 @@ def run_algorithm(graph_config, algorithm_config, debug_config=None, output_dir=
         print("\n\n\n", best_tree)
         draw_graph(best_tree)
 
-    # Calculate final scores for best_tree
-    if best_tree and best_tree.number_of_edges() > 0:
-        edges_with_weights = [(edge, best_tree.get_edge_data(edge[0], edge[1])) for edge in best_tree.edges()]
-        max_edge_cost = max(edges_with_weights, key=get_weight)[1]["weight"]
-        final_edgecost = sum(data['weight'] for edge, data in edges_with_weights) / (max_edge_cost * len(edges_with_weights))
+    # Save best tree WITH score annotation
+    best_filename = None
+    if debug_config.save_plots and best_tree is not None:
+        count_picture, best_filename = save_graph(best_tree, plot_path, count_picture, name="best_tree",
+                  edge_cost=best_edge_cost, degree_cost=best_degree_cost)
+        # Register best tree
+        trees_registry.append((copy.deepcopy(best_tree), best_filename))
 
-        set_power_nodes = set(list(power_nodes_mandatory) + list(power_nodes_discretionary))
-        final_degree_cost = sum(best_tree.degree(x) / capacities[x] for x in best_tree.nodes() if x in set_power_nodes)
-        final_degree_cost = final_degree_cost / len(best_tree.nodes())
-    else:
-        final_edgecost = 0
-        final_degree_cost = 0
+    # Calculate absolute scores for all trees with global normalization
+    if debug_config.save_plots and trees_registry:
+        scores = calculate_absolute_scores(trees_registry, capacities,
+                                          power_nodes_mandatory, power_nodes_discretionary)
+        # Mark best tree in scores
+        if best_tree is not None and best_filename and best_filename in scores["trees"]:
+            scores["trees"][best_filename]["is_best"] = True
 
-    if debug_config.save_plots:
-        save_graph(best_tree, plot_path, count_picture, name="best_tree",
-                  edge_cost=final_edgecost, degree_cost=final_degree_cost)
+        scores_path = os.path.join(plot_path, "scores.json")
+        save_scores_to_json(scores, scores_path)
 
     print(f"Running time: {elapsed_time} seconds")
 

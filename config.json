@@ -3,7 +3,7 @@
     "num_nodes": 6,
     "weak_ratio": 0.4,
     "mandatory_ratio": 0.2,
-    "seed": 42,
+    "seed": 24,
     "comment": "Can also use: num_weak, num_mandatory, num_discretionary instead of num_nodes+ratios"
   },
   "capacities": {
